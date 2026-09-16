@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 10
       - name: Repair SusFS backport
         run: python3 .github/scripts/repair_susfs_backport.py
       - name: Verify no pstore paths changed
@@ -30,7 +30,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add fs/proc/task_mmu.c fs/susfs.c
+          git add fs/proc/task_mmu.c fs/susfs.c fs/namespace.c kernel/sys.c
           git diff --cached --check
-          git commit -m 'fix: adapt SusFS task_mmu hooks to 17.0' || exit 0
+          git commit -m 'fix: adapt SusFS hooks to native 17.0 semantics' || exit 0
           git push
