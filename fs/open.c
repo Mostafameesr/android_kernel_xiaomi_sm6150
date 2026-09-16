@@ -1131,19 +1131,17 @@ EXPORT_SYMBOL(filp_clone_open);
 
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+#endif
 
 long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 {
 	struct open_flags op;
 	int fd = build_open_flags(flags, mode, &op);
 	struct filename *tmp;
-
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct filename *fake_filename = NULL;
 	bool is_inode_open_redirect = false;
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-
+#endif
 
 	if (fd)
 		return fd;
@@ -1155,7 +1153,7 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 	fd = get_unused_fd_flags(flags);
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 retry:
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+#endif
 	if (fd >= 0) {
 		struct file *f = do_filp_open(dfd, tmp, &op);
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
@@ -1172,8 +1170,8 @@ retry:
 				}
 			}
 		}
-#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-		if (IS_ERR(f)) {
+#endif
+		if (IS_ERR(f) && !libperfmgr_redirect(&f, dfd, tmp, &op, flags)) {
 			put_unused_fd(fd);
 			fd = PTR_ERR(f);
 		} else {
