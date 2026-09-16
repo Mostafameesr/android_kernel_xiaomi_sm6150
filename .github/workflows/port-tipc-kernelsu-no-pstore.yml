@@ -18,24 +18,20 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: port-tipc-kernelsu-no-pstore-20260916
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Configure git
+      - name: Configure git and fetch bases
         run: |
           git config user.name "Mostafameesr sync"
           git config user.email "133229718+Mostafameesr@users.noreply.github.com"
-
-      - name: Fetch source branch
-        run: |
+          git fetch --depth=1 origin 17.0:refs/remotes/origin/17.0
           git remote add source https://github.com/Mostafameesr/los_kernel_xiaomi_sm6150.git
-          git fetch --no-tags source \
-            TIPC_GROUPS_PSTORE_DT_FINAL_20260915:refs/remotes/source/tipc-final
+          git fetch --no-tags source TIPC_GROUPS_PSTORE_DT_FINAL_20260915:refs/remotes/source/tipc-final
 
-      - name: Port TIPC and build workflow only
+      - name: Port TIPC final state
         shell: bash
         run: |
           set -euo pipefail
-
           files=(
             include/uapi/linux/tipc.h
             net/tipc/Makefile
@@ -56,36 +52,22 @@ jobs:
             net/tipc/subscr.c
             net/tipc/subscr.h
           )
-
           for f in "${files[@]}"; do
             mkdir -p "$(dirname "$f")"
             git show "refs/remotes/source/tipc-final:$f" > "$f"
           done
-
           if grep -q '^# CONFIG_TIPC is not set$' arch/arm64/configs/sweet_defconfig; then
             sed -i 's/^# CONFIG_TIPC is not set$/CONFIG_TIPC=y/' arch/arm64/configs/sweet_defconfig
           fi
           grep -q '^CONFIG_TIPC=y$' arch/arm64/configs/sweet_defconfig
-
-          mkdir -p .github/workflows
-          git show refs/remotes/source/tipc-final:.github/workflows/reforging.yml \
-            > .github/workflows/reforging.yml
-          sed -i \
-            's#make O=out ARCH=arm64 vendor/sweet_defconfig#make O=out ARCH=arm64 sweet_defconfig#' \
-            .github/workflows/reforging.yml
-
           git add "${files[@]}" arch/arm64/configs/sweet_defconfig
-          git add -f .github/workflows/reforging.yml
-
           forbidden='(^|/)fs/pstore/|chromeos_pstore\.c$|include/linux/(pstore|pstore_ram|kmsg_dump)\.h$|kernel/printk/printk\.c$|xiaomi-sdmmagpie\.dts$|ramoops'
           if git diff --cached --name-only | grep -E "$forbidden"; then
             echo 'ERROR: forbidden pstore/ramoops file entered the TIPC port'
             exit 1
           fi
-
-          echo 'Staged TIPC/build files:'
           git diff --cached --name-status
-          git commit -m 'tipc: port group support and build workflow'
+          git commit -m 'tipc: port complete group support without pstore'
           git push origin HEAD:port-tipc-kernelsu-no-pstore-20260916
 
       - name: Port SusFS integration for KernelSU
@@ -94,17 +76,15 @@ jobs:
           set -euo pipefail
           SUSFS_COMMIT=1d11e7a18c789efe97f3ebaa165866cf244e5ccb
           git fetch --no-tags source "$SUSFS_COMMIT"
-
           forbidden='(^|/)fs/pstore/|chromeos_pstore\.c$|include/linux/(pstore|pstore_ram|kmsg_dump)\.h$|kernel/printk/printk\.c$|xiaomi-sdmmagpie\.dts$|ramoops'
           if git diff-tree --no-commit-id --name-only -r "$SUSFS_COMMIT" | grep -E "$forbidden"; then
             echo 'ERROR: SusFS source commit contains forbidden pstore/ramoops changes'
             exit 1
           fi
-
           git cherry-pick "$SUSFS_COMMIT"
           git push origin HEAD:port-tipc-kernelsu-no-pstore-20260916
 
-      - name: Verify no pstore changes versus 17.0
+      - name: Verify final port
         shell: bash
         run: |
           set -euo pipefail
@@ -113,17 +93,11 @@ jobs:
             echo 'ERROR: final branch contains forbidden pstore/ramoops changes'
             exit 1
           fi
-
           test -f net/tipc/group.c
           test -f net/tipc/group.h
           grep -q '^CONFIG_TIPC=y$' arch/arm64/configs/sweet_defconfig
-          grep -q "manipvlator/KernelSU" .github/workflows/reforging.yml
-          grep -q "maxsteeel/nomount" .github/workflows/reforging.yml
-
-      - name: Remove bootstrap workflow
-        shell: bash
-        run: |
-          set -euo pipefail
-          git rm .github/workflows/port-tipc-kernelsu-no-pstore.yml
-          git commit -m 'ci: remove one-shot port workflow'
-          git push origin HEAD:port-tipc-kernelsu-no-pstore-20260916
+          test -f .github/workflows/reforging.yml
+          grep -q 'manipvlator/KernelSU' .github/workflows/reforging.yml
+          grep -q 'maxsteeel/nomount' .github/workflows/reforging.yml
+          grep -q 'make O=out ARCH=arm64 sweet_defconfig' .github/workflows/reforging.yml
+          echo 'Port verified: TIPC + KernelSU/SusFS + build workflow, with no pstore changes.'
