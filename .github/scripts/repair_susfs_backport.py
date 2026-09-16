@@ -5,6 +5,8 @@ import subprocess
 BASE = "87df9fab2d01cbae20896d7bb1f452d3d99ac59c"
 TASK = Path("fs/proc/task_mmu.c")
 SUSFS = Path("fs/susfs.c")
+SYS = Path("kernel/sys.c")
+NS = Path("fs/namespace.c")
 
 
 def replace_once(text, old, new, label):
@@ -14,11 +16,13 @@ def replace_once(text, old, new, label):
     return text.replace(old, new, 1)
 
 
+def base_file(path):
+    return subprocess.check_output(["git", "show", f"{BASE}:{path}"], text=True)
+
+
 # task_mmu.c was the conflicted file that got mixed with a different baseline.
 # Start from the native 17.0 version, then apply only the SusFS hooks.
-task = subprocess.check_output(
-    ["git", "show", f"{BASE}:fs/proc/task_mmu.c"], text=True
-)
+task = base_file("fs/proc/task_mmu.c")
 
 task = replace_once(
     task,
@@ -190,39 +194,114 @@ task = replace_once(
     "\t\tup_read(&mm->mmap_sem);",
     "task_mmu pagemap hook",
 )
-
 TASK.write_text(task)
 
-# Fix an OPEN_REDIRECT ownership bug inherited from the SusFS source commit:
-# the allocated path pointer was passed by value, so the caller never received it.
+# Fix OPEN_REDIRECT output ownership: the source passed char * by value,
+# so the allocated spoofed pathname never reached show_map_vma().
 susfs = SUSFS.read_text()
-susfs = replace_once(
-    susfs,
-    "int susfs_open_redirect_spoof_show_map_vma(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char *spoofed_name) {",
-    "int susfs_open_redirect_spoof_show_map_vma(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char **spoofed_name) {",
-    "susfs redirect signature",
-)
-susfs = replace_once(
-    susfs,
-    "\tif (spoofed_name) {\n\t\tSUSFS_LOGE(\"spoofed_name must be NULL first!\\n\");\n\t\treturn -EINVAL;\n\t}",
-    "\tif (!spoofed_name || *spoofed_name) {\n\t\tSUSFS_LOGE(\"spoofed_name output must be valid and NULL first!\\n\");\n\t\tsrcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);\n\t\treturn -EINVAL;\n\t}",
-    "susfs redirect output validation",
-)
-susfs = replace_once(
-    susfs,
-    "\t\t\tspoofed_name = kzalloc(SUSFS_MAX_LEN_PATHNAME, GFP_KERNEL);\n\t\t\tif (!spoofed_name) {",
-    "\t\t\t*spoofed_name = kzalloc(SUSFS_MAX_LEN_PATHNAME, GFP_KERNEL);\n\t\t\tif (!*spoofed_name) {",
-    "susfs redirect allocation",
-)
-susfs = replace_once(
-    susfs,
-    "\t\t\tstrncpy(spoofed_name, entry->info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);",
-    "\t\t\tstrncpy(*spoofed_name, entry->info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);",
-    "susfs redirect copy",
-)
+# Allow re-running this script after the first repair commit.
+if "char **spoofed_name" not in susfs:
+    susfs = replace_once(
+        susfs,
+        "int susfs_open_redirect_spoof_show_map_vma(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char *spoofed_name) {",
+        "int susfs_open_redirect_spoof_show_map_vma(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char **spoofed_name) {",
+        "susfs redirect signature",
+    )
+    susfs = replace_once(
+        susfs,
+        "\tif (spoofed_name) {\n\t\tSUSFS_LOGE(\"spoofed_name must be NULL first!\\n\");\n\t\treturn -EINVAL;\n\t}",
+        "\tif (!spoofed_name || *spoofed_name) {\n\t\tSUSFS_LOGE(\"spoofed_name output must be valid and NULL first!\\n\");\n\t\tsrcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);\n\t\treturn -EINVAL;\n\t}",
+        "susfs redirect output validation",
+    )
+    susfs = replace_once(
+        susfs,
+        "\t\t\tspoofed_name = kzalloc(SUSFS_MAX_LEN_PATHNAME, GFP_KERNEL);\n\t\t\tif (!spoofed_name) {",
+        "\t\t\t*spoofed_name = kzalloc(SUSFS_MAX_LEN_PATHNAME, GFP_KERNEL);\n\t\t\tif (!*spoofed_name) {",
+        "susfs redirect allocation",
+    )
+    susfs = replace_once(
+        susfs,
+        "\t\t\tstrncpy(spoofed_name, entry->info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);",
+        "\t\t\tstrncpy(*spoofed_name, entry->info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);",
+        "susfs redirect copy",
+    )
 SUSFS.write_text(susfs)
 
-# Structural sanity checks for the previously corrupted file.
+# kernel/sys.c was another -X theirs conflict. Rebuild it from the native
+# target baseline and add only the SusFS uname hook, preserving target fake-uname
+# options and the target GMS handling.
+sysc = base_file("kernel/sys.c")
+sysc = replace_once(
+    sysc,
+    "SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)\n{",
+    "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+    "extern void susfs_spoof_uname(struct new_utsname *tmp);\n"
+    "#endif\n"
+    "SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)\n{",
+    "sys uname extern",
+)
+sysc = replace_once(
+    sysc,
+    "#endif\n\tup_read(&uts_sem);\n\n\trcu_read_lock();",
+    "#endif\n"
+    "#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME\n"
+    "\tsusfs_spoof_uname(&tmp);\n"
+    "#endif\n"
+    "\tup_read(&uts_sem);\n\n"
+    "\trcu_read_lock();",
+    "sys uname hook",
+)
+SYS.write_text(sysc)
+
+# namespace.c largely applied, but two native target allocator functions were
+# overwritten by the source baseline. Keep all SusFS additions and restore the
+# target's IDA locking/start semantics with SusFS-specific exceptions.
+ns = NS.read_text()
+old_free_start = ns.index("static void mnt_free_id(struct mount *mnt)\n{")
+old_free_end = ns.index("\n}\n\n/*\n * Allocate a new peer group ID", old_free_start) + 2
+ns = ns[:old_free_start] + """static void mnt_free_id(struct mount *mnt)
+{
+	int id = mnt->mnt_id;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (mnt->mnt.mnt_flags & VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT)
+		return;
+#endif
+	spin_lock(&mnt_id_lock);
+	ida_remove(&mnt_id_ida, id);
+	if (mnt_id_start > id)
+		mnt_id_start = id;
+	spin_unlock(&mnt_id_lock);
+}""" + ns[old_free_end:]
+
+alloc_start = ns.index("static int mnt_alloc_group_id(struct mount *mnt)\n{")
+alloc_end = ns.index("\n}\n\n/*\n * Release a peer group ID", alloc_start) + 2
+ns = ns[:alloc_start] + """static int mnt_alloc_group_id(struct mount *mnt)
+{
+	int res;
+	int start = mnt_group_start;
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	bool ksu_group = susfs_is_current_ksu_domain();
+
+	if (ksu_group)
+		start = DEFAULT_KSU_MNT_GROUP_ID;
+#endif
+
+	if (!ida_pre_get(&mnt_group_ida, GFP_KERNEL))
+		return -ENOMEM;
+
+	res = ida_get_new_above(&mnt_group_ida, start, &mnt->mnt_group_id);
+	if (!res) {
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+		if (!ksu_group)
+#endif
+			mnt_group_start = mnt->mnt_group_id + 1;
+	}
+
+	return res;
+}""" + ns[alloc_end:]
+NS.write_text(ns)
+
+# Structural sanity checks for the files hit by automatic conflict resolution.
 fixed = TASK.read_text()
 if fixed.count("static int show_smap(struct seq_file *m, void *v, int is_pid)") != 1:
     raise RuntimeError("native show_smap signature missing or duplicated")
@@ -233,4 +312,12 @@ if "static int show_smaps_rollup(" in fixed:
 if "SEQ_PUT_DEC" in fixed:
     raise RuntimeError("foreign task_mmu baseline residue still present")
 
-print("SusFS task_mmu backport repaired against native 17.0 baseline")
+sysfixed = SYS.read_text()
+if "CONFIG_FAKE_UNAME_4_19" not in sysfixed or "susfs_spoof_uname(&tmp);" not in sysfixed:
+    raise RuntimeError("kernel/sys.c target fake-uname flow or SusFS hook missing")
+
+nsfixed = NS.read_text()
+if "spin_lock(&mnt_id_lock);" not in nsfixed or "ida_get_new_above(&mnt_group_ida, start" not in nsfixed:
+    raise RuntimeError("fs/namespace.c native allocator semantics not restored")
+
+print("SusFS conflicted files repaired against native 17.0 semantics")
