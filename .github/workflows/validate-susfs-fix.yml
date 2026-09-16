@@ -1,5 +1,6 @@
 name: Validate SusFS Fix
 
+# Re-run after full native-baseline compatibility repair.
 on:
   push:
     branches:
