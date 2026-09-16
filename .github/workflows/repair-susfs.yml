@@ -1,0 +1,36 @@
+name: Repair SusFS Backport
+
+on:
+  push:
+    branches:
+      - fix-susfs-backport-20260916
+    paths:
+      - '.github/scripts/repair_susfs_backport.py'
+      - '.github/workflows/repair-susfs.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Repair SusFS backport
+        run: python3 .github/scripts/repair_susfs_backport.py
+      - name: Verify no pstore paths changed
+        run: |
+          if git diff --name-only 17.0...HEAD | grep -Ei '(^|/)(pstore|ramoops)|chromeos_pstore'; then
+            echo 'Unexpected pstore/ramoops path in branch diff'
+            exit 1
+          fi
+      - name: Commit repaired files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add fs/proc/task_mmu.c fs/susfs.c
+          git diff --cached --check
+          git commit -m 'fix: adapt SusFS task_mmu hooks to 17.0' || exit 0
+          git push
