@@ -74,7 +74,8 @@ jobs:
             's#make O=out ARCH=arm64 vendor/sweet_defconfig#make O=out ARCH=arm64 sweet_defconfig#' \
             .github/workflows/reforging.yml
 
-          git add "${files[@]}" arch/arm64/configs/sweet_defconfig .github/workflows/reforging.yml
+          git add "${files[@]}" arch/arm64/configs/sweet_defconfig
+          git add -f .github/workflows/reforging.yml
 
           forbidden='(^|/)fs/pstore/|chromeos_pstore\.c$|include/linux/(pstore|pstore_ram|kmsg_dump)\.h$|kernel/printk/printk\.c$|xiaomi-sdmmagpie\.dts$|ramoops'
           if git diff --cached --name-only | grep -E "$forbidden"; then
